@@ -1,0 +1,9 @@
+{
+  "uuid": "real-tray@local",
+  "name": "Real Tray",
+  "description": "AppIndicator/KStatusNotifierItem support with a real drop-down tray",
+  "shell-version": ["50"],
+  "settings-schema": "org.gnome.shell.extensions.real-tray",
+  "url": "https://github.com/local/gnome-real-tray",
+  "version": 9
+}

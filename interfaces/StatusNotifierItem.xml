@@ -1,0 +1,14 @@
+<node>
+  <interface name="org.kde.StatusNotifierItem">
+    <method name="ContextMenu"><arg type="i" direction="in"/><arg type="i" direction="in"/></method>
+    <method name="Activate"><arg type="i" direction="in"/><arg type="i" direction="in"/></method>
+    <method name="SecondaryActivate"><arg type="i" direction="in"/><arg type="i" direction="in"/></method>
+    <method name="Scroll"><arg type="i" direction="in"/><arg type="s" direction="in"/></method>
+    <property name="Id" type="s" access="read"/><property name="Title" type="s" access="read"/>
+    <property name="Status" type="s" access="read"/><property name="DesktopEntry" type="s" access="read"/>
+    <property name="IconName" type="s" access="read"/><property name="IconPixmap" type="a(iiay)" access="read"/>
+    <property name="AttentionIconName" type="s" access="read"/><property name="AttentionIconPixmap" type="a(iiay)" access="read"/>
+    <property name="OverlayIconName" type="s" access="read"/><property name="OverlayIconPixmap" type="a(iiay)" access="read"/>
+    <property name="Menu" type="o" access="read"/><property name="ItemIsMenu" type="b" access="read"/>
+  </interface>
+</node>

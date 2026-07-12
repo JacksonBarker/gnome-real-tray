@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <enum id="org.gnome.shell.extensions.real-tray.Mode"><value nick="off" value="0"/><value nick="overflow" value="1"/><value nick="dropdown-only" value="2"/></enum>
+  <enum id="org.gnome.shell.extensions.real-tray.Layout"><value nick="grid" value="0"/><value nick="rows" value="1"/></enum>
+  <enum id="org.gnome.shell.extensions.real-tray.PanelBox"><value nick="left" value="0"/><value nick="center" value="1"/><value nick="right" value="2"/></enum>
+  <enum id="org.gnome.shell.extensions.real-tray.ButtonPosition"><value nick="before" value="0"/><value nick="after" value="1"/></enum>
+  <schema id="org.gnome.shell.extensions.real-tray" path="/org/gnome/shell/extensions/real-tray/">
+    <key name="mode" enum="org.gnome.shell.extensions.real-tray.Mode"><default>'overflow'</default></key>
+    <key name="panel-limit" type="u"><range min="0" max="100"/><default>3</default></key>
+    <key name="tray-layout" enum="org.gnome.shell.extensions.real-tray.Layout"><default>'grid'</default></key>
+    <key name="panel-box" enum="org.gnome.shell.extensions.real-tray.PanelBox"><default>'right'</default></key>
+    <key name="tray-button-position" enum="org.gnome.shell.extensions.real-tray.ButtonPosition"><default>'after'</default></key>
+    <key name="compact-mode" type="b"><default>true</default></key>
+    <key name="icon-size" type="u"><range min="12" max="96"/><default>20</default></key>
+    <key name="tray-icon-size" type="u"><range min="12" max="96"/><default>18</default></key>
+    <key name="tray-button-icon" type="s"><default>'view-grid-symbolic'</default></key>
+    <key name="grid-icon-size" type="u"><range min="16" max="128"/><default>32</default></key>
+    <key name="grid-columns" type="u"><range min="5" max="12"/><default>5</default></key>
+    <key name="attention-badge" type="b"><default>true</default></key>
+    <key name="rules-json" type="s"><default>'{"version":1,"rules":{}}'</default></key>
+    <key name="active-items-json" type="s"><default>'[]'</default></key>
+  </schema>
+</schemalist>
