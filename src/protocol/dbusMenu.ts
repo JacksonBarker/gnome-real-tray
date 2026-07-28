@@ -1,6 +1,6 @@
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
-import type {MenuNode} from '../model/menu.js';
+import {decodeDBusMenuLabel, type MenuNode} from '../model/menu.js';
 import '../util/promisify.js';
 
 type RawLayout = [number, Record<string, GLib.Variant>, GLib.Variant[]];
@@ -14,7 +14,7 @@ function parseLayout(raw: RawLayout): MenuNode {
     const toggleState = unpackProperty<number>(properties, 'toggle-state', -1);
     return {
         id,
-        label: unpackProperty(properties, 'label', ''),
+        label: decodeDBusMenuLabel(unpackProperty(properties, 'label', '')),
         visible: unpackProperty(properties, 'visible', true),
         enabled: unpackProperty(properties, 'enabled', true),
         type: unpackProperty<string>(properties, 'type', '') === 'separator' ? 'separator' : 'standard',
