@@ -22,9 +22,9 @@ function status(value: string | null): IndicatorStatus {
     return value === 'Passive' || value === 'NeedsAttention' ? value : 'Active';
 }
 
-function namedIcon(properties: PropertyMap, key: string): IconSource | null {
+function namedIcon(properties: PropertyMap, key: string, iconThemePath: string | null): IconSource | null {
     const name = unpackString(properties, key);
-    return iconNameSource(name);
+    return iconNameSource(name, iconThemePath);
 }
 
 function pixmapIcon(properties: PropertyMap, key: string): IconSource | null {
@@ -45,8 +45,13 @@ function pixmapIcon(properties: PropertyMap, key: string): IconSource | null {
     return candidates[0] ?? null;
 }
 
-function resolvedIcon(properties: PropertyMap, nameKey: string, pixmapKey: string): IconSource | null {
-    return namedIcon(properties, nameKey) ?? pixmapIcon(properties, pixmapKey);
+function resolvedIcon(
+    properties: PropertyMap,
+    nameKey: string,
+    pixmapKey: string,
+    iconThemePath: string | null,
+): IconSource | null {
+    return namedIcon(properties, nameKey, iconThemePath) ?? pixmapIcon(properties, pixmapKey);
 }
 
 export class StatusNotifierItemClient {
@@ -150,7 +155,9 @@ export class StatusNotifierItemClient {
     }
 
     #updateModel(): void {
-        const attention = resolvedIcon(this.#properties, 'AttentionIconName', 'AttentionIconPixmap');
+        const iconThemePath = unpackString(this.#properties, 'IconThemePath');
+        const attention = resolvedIcon(
+            this.#properties, 'AttentionIconName', 'AttentionIconPixmap', iconThemePath);
         this.model = {
             ...this.model,
             identity: normalizeIdentity(
@@ -159,9 +166,10 @@ export class StatusNotifierItemClient {
             status: status(unpackString(this.#properties, 'Status')),
             menuPath: unpackString(this.#properties, 'Menu'),
             itemIsMenu: unpackBoolean(this.#properties, 'ItemIsMenu'),
-            icon: resolvedIcon(this.#properties, 'IconName', 'IconPixmap'),
+            icon: resolvedIcon(this.#properties, 'IconName', 'IconPixmap', iconThemePath),
             attentionIcon: attention,
-            overlayIcon: resolvedIcon(this.#properties, 'OverlayIconName', 'OverlayIconPixmap'),
+            overlayIcon: resolvedIcon(
+                this.#properties, 'OverlayIconName', 'OverlayIconPixmap', iconThemePath),
         };
     }
 

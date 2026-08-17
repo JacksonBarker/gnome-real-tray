@@ -13,4 +13,16 @@ describe('SNI IconName', () => {
             kind: 'theme', name: 'network-vpn-symbolic',
         });
     });
+
+    it('keeps the item-specific theme path with a named icon', () => {
+        expect(iconNameSource('status_icon_0', '/tmp/org.chromium.Chromium.icon')).toEqual({
+            kind: 'theme', name: 'status_icon_0', themePath: '/tmp/org.chromium.Chromium.icon',
+        });
+    });
+
+    it('ignores a non-absolute theme path', () => {
+        expect(iconNameSource('network-vpn-symbolic', 'relative/icons')).toEqual({
+            kind: 'theme', name: 'network-vpn-symbolic',
+        });
+    });
 });

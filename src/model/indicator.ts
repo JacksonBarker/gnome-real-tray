@@ -2,7 +2,7 @@ import type {IndicatorIdentity} from '../identity/indicatorIdentity.js';
 
 export type IndicatorStatus = 'Passive' | 'Active' | 'NeedsAttention';
 export type IconSource =
-    | {kind: 'theme'; name: string}
+    | {kind: 'theme'; name: string; themePath?: string}
     | {kind: 'file'; path: string}
     | {kind: 'pixmap'; width: number; height: number; bytes: Uint8Array};
 

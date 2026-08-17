@@ -1,22 +1,47 @@
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import GdkPixbuf from 'gi://GdkPixbuf';
+import St from 'gi://St';
 import type {IconSource} from '../model/indicator.js';
+
+const iconThemes = new Map<string, St.IconTheme>();
+
+function bytesIcon(path: string): Gio.BytesIcon | null {
+    try {
+        const [loaded, contents] = GLib.file_get_contents(path);
+        if (loaded && contents.length > 0 && contents.length <= 5 * 1024 * 1024)
+            return new Gio.BytesIcon({bytes: new GLib.Bytes(contents)});
+    } catch (error) {
+        console.warn(`Real Tray: could not load icon file ${path}: ${String(error)}`);
+    }
+    return null;
+}
+
+function iconFromThemePath(name: string, themePath: string): Gio.BytesIcon | null {
+    let theme = iconThemes.get(themePath);
+    if (!theme) {
+        theme = new St.IconTheme();
+        theme.set_search_path([themePath]);
+        iconThemes.set(themePath, theme);
+    }
+    const filename = theme.lookup_icon(
+        name, 32, St.IconLookupFlags.GENERIC_FALLBACK)?.get_filename();
+    return filename ? bytesIcon(filename) : null;
+}
 
 export function toGIcon(source: IconSource | null): Gio.Icon {
     if (!source)
         return new Gio.ThemedIcon({name: 'image-missing-symbolic'});
-    if (source.kind === 'theme')
-        return new Gio.ThemedIcon({name: source.name});
-    if (source.kind === 'file') {
-        try {
-            const [loaded, contents] = GLib.file_get_contents(source.path);
-            if (loaded && contents.length > 0 && contents.length <= 5 * 1024 * 1024)
-                return new Gio.BytesIcon({bytes: new GLib.Bytes(contents)});
-        } catch (error) {
-            console.warn(`Real Tray: could not load icon file ${source.path}: ${String(error)}`);
+    if (source.kind === 'theme') {
+        if (source.themePath) {
+            const icon = iconFromThemePath(source.name, source.themePath);
+            if (icon)
+                return icon;
         }
-        return new Gio.ThemedIcon({name: 'image-missing-symbolic'});
+        return new Gio.ThemedIcon({name: source.name});
+    }
+    if (source.kind === 'file') {
+        return bytesIcon(source.path) ?? new Gio.ThemedIcon({name: 'image-missing-symbolic'});
     }
     const rgba = new Uint8Array(source.bytes.length);
     for (let offset = 0; offset < source.bytes.length; offset += 4) {
