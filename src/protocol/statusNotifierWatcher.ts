@@ -1,15 +1,12 @@
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import {Observable} from '../util/events.js';
-import {DEFAULT_ITEM_PATH, WATCHER_BUS_NAME, WATCHER_OBJECT_PATH, WATCHER_XML} from './interfaces.js';
+import {WATCHER_BUS_NAME, WATCHER_OBJECT_PATH, WATCHER_XML} from './interfaces.js';
 import {parseDiscoveryOutput} from './discovery.js';
+import {StatusNotifierRegistrationIndex, type Registration} from './statusNotifierRegistration.js';
 import '../util/promisify.js';
 
-export interface Registration {
-    key: string;
-    busName: string;
-    objectPath: string;
-}
+export type {Registration} from './statusNotifierRegistration.js';
 
 interface WatcherImplementation {
     RegisteredStatusNotifierItems: string[];
@@ -23,7 +20,7 @@ export class StatusNotifierWatcherService {
     readonly registered = new Observable<Registration>();
     readonly unregistered = new Observable<string>();
     readonly conflict = new Observable<void>();
-    readonly #registrations = new Map<string, Registration>();
+    readonly #registrations = new StatusNotifierRegistrationIndex();
     readonly #watches = new Map<string, number>();
     #ownerId = 0;
     #exported: Gio.DBusExportedObject | null = null;
@@ -33,7 +30,7 @@ export class StatusNotifierWatcherService {
     #scannerPath: string | null = null;
     #scanTimer = 0;
     #scanner: Gio.Subprocess | null = null;
-    #scanCancellable = new Gio.Cancellable();
+    #cancellable = new Gio.Cancellable();
 
     start(scannerPath: string): void {
         this.#scannerPath = scannerPath;
@@ -59,22 +56,22 @@ export class StatusNotifierWatcherService {
     }
 
     async #discoverExistingItems(): Promise<void> {
-        if (!this.#scannerPath || this.#scanCancellable.is_cancelled())
+        if (!this.#scannerPath || this.#cancellable.is_cancelled())
             return;
         try {
             this.#scanner = Gio.Subprocess.new(
                 ['gjs', '-m', this.#scannerPath],
                 Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
             );
-            const [stdout, stderr] = await this.#scanner.communicate_utf8_async(null, this.#scanCancellable);
+            const [stdout, stderr] = await this.#scanner.communicate_utf8_async(null, this.#cancellable);
             if (!this.#scanner.get_successful()) {
                 console.warn(`Real Tray: indicator discovery failed: ${stderr.trim()}`);
                 return;
             }
             for (const discovery of parseDiscoveryOutput(stdout))
-                this.#register(discovery.objectPath, discovery.busName);
+                await this.#register(discovery.objectPath, discovery.busName);
         } catch (error) {
-            if (!this.#scanCancellable.is_cancelled())
+            if (!this.#cancellable.is_cancelled())
                 console.warn(`Real Tray: indicator discovery failed: ${String(error)}`);
         } finally {
             this.#scanner = null;
@@ -85,10 +82,14 @@ export class StatusNotifierWatcherService {
         this.#connection = connection;
         const implementation: WatcherImplementation = {
             RegisteredStatusNotifierItems: [], IsStatusNotifierHostRegistered: true, ProtocolVersion: 0,
-            RegisterStatusNotifierItemAsync: (parameters, invocation) => {
+            RegisterStatusNotifierItemAsync: async (parameters, invocation) => {
                 const [service] = parameters;
-                this.#register(service, invocation.get_sender() ?? '');
-                invocation.return_value(null);
+                try {
+                    await this.#register(service, invocation.get_sender() ?? '');
+                    invocation.return_value(null);
+                } catch (error) {
+                    invocation.return_dbus_error('org.freedesktop.DBus.Error.Failed', String(error));
+                }
             },
             RegisterStatusNotifierHostAsync: (_parameters, invocation) => invocation.return_value(null),
         };
@@ -97,15 +98,23 @@ export class StatusNotifierWatcherService {
         this.#exported.export(connection, WATCHER_OBJECT_PATH);
     }
 
-    #register(service: string, sender: string): void {
-        const isPath = service.startsWith('/');
-        const busName = isPath ? sender : service;
-        const objectPath = isPath ? service : DEFAULT_ITEM_PATH;
-        const key = `${busName}${objectPath}`;
-        if (this.#registrations.has(key))
+    async #resolveUniqueName(busName: string): Promise<string> {
+        const reply = await this.#connection!.call(
+            'org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus', 'GetNameOwner',
+            new GLib.Variant('(s)', [busName]), new GLib.VariantType('(s)'),
+            Gio.DBusCallFlags.NONE, 5000, this.#cancellable,
+        );
+        const [owner] = reply.deepUnpack();
+        return owner;
+    }
+
+    async #register(service: string, sender: string): Promise<void> {
+        const registration = await this.#registrations.add(
+            service, sender, busName => this.#resolveUniqueName(busName),
+        );
+        if (!registration)
             return;
-        const registration = {key, busName, objectPath};
-        this.#registrations.set(key, registration);
+        const {key, busName} = registration;
         const watch = Gio.bus_watch_name_on_connection(
             this.#connection!, busName, Gio.BusNameWatcherFlags.NONE,
             () => undefined, () => this.#remove(key),
@@ -117,7 +126,7 @@ export class StatusNotifierWatcherService {
     }
 
     #remove(key: string): void {
-        if (!this.#registrations.delete(key))
+        if (!this.#registrations.remove(key))
             return;
         const watch = this.#watches.get(key);
         if (watch)
@@ -129,7 +138,7 @@ export class StatusNotifierWatcherService {
     }
 
     #syncProperties(): void {
-        const items = [...this.#registrations.keys()];
+        const items = this.#registrations.keys();
         if (this.#implementation)
             this.#implementation.RegisteredStatusNotifierItems = items;
         this.#exported?.emit_property_changed('RegisteredStatusNotifierItems', new GLib.Variant('as', items));
@@ -139,13 +148,13 @@ export class StatusNotifierWatcherService {
         if (this.#scanTimer)
             GLib.source_remove(this.#scanTimer);
         this.#scanTimer = 0;
-        this.#scanCancellable.cancel();
+        this.#cancellable.cancel();
         this.#scanner?.force_exit();
         this.#scanner = null;
         for (const watch of this.#watches.values())
             Gio.bus_unwatch_name(watch);
         this.#watches.clear();
-        this.#registrations.clear();
+        this.#registrations.destroy();
         this.#exported?.unexport();
         this.#exported = null;
         this.#implementation = null;
