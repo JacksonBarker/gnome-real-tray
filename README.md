@@ -14,6 +14,11 @@ The extension deliberately does not support legacy XEmbed tray icons. Disable
 "AppIndicator and KStatusNotifierItem Support" before enabling Real Tray: only
 one process can own `org.kde.StatusNotifierWatcher`.
 
+Left click activates the application, right click opens its menu, and middle
+click requests its secondary action. Items declaring `ItemIsMenu` also open
+their menu on left click. These actions apply to both panel and tray icons.
+Keyboard activation uses Enter or Space; Menu or Shift+F10 opens the context menu.
+
 ## Development
 
 ```sh

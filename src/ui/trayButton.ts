@@ -9,6 +9,7 @@ import type {ItemRegistry} from '../registry/itemRegistry.js';
 import {DBusMenuClient} from '../protocol/dbusMenu.js';
 import {populateIndicatorMenu} from './indicatorMenu.js';
 import {applyPanelSpacing} from './panelSpacing.js';
+import {addIndicatorClicks} from './indicatorClicks.js';
 
 export class TrayButton {
     readonly actor: PanelMenu.Button;
@@ -94,15 +95,15 @@ export class TrayButton {
     }
 
     #rowEntry(item: IndicatorViewModel): PopupMenu.PopupMenuItem {
-        const entry = new PopupMenu.PopupMenuItem(item.displayName);
+        const entry = new PopupMenu.PopupMenuItem(item.displayName, {activate: false});
         const icon = new St.Icon({
             gicon: toGIcon(item.displayIcon),
             icon_size: 16,
             style_class: 'popup-menu-icon',
         });
         entry.insert_child_at_index(icon, 0);
-        entry.connect('activate', () => this.#activate(item));
-        this.#addInputControllers(entry, item);
+        addIndicatorClicks(entry, (button, x, y) => this.#click(item, button, x, y));
+        this.#addScrollController(entry, item);
         return entry;
     }
 
@@ -117,24 +118,28 @@ export class TrayButton {
             height: cellSize,
             child: icon,
         });
-        button.connect('clicked', () => this.#activate(item));
-        this.#addInputControllers(button, item);
+        button.connect('clicked', () => {
+            const [x, y] = button.get_transformed_position();
+            this.#click(item, 1, Math.round(x), Math.round(y));
+        });
+        addIndicatorClicks(button, (number, x, y) => this.#click(item, number, x, y), false);
+        this.#addScrollController(button, item);
         return button;
     }
 
-    #addInputControllers(actor: Clutter.Actor, item: IndicatorViewModel): void {
-        for (const buttonNumber of [2, 3]) {
-            const click = new Clutter.ClickGesture({
-                required_button: buttonNumber,
-                recognize_on_press: true,
-            });
-            click.connect('recognize', () => {
-                this.registry.getClient(item.registrationKey)?.call(
-                    buttonNumber === 2 ? 'SecondaryActivate' : 'ContextMenu',
-                );
-            });
-            actor.add_action(click);
+    #click(item: IndicatorViewModel, button: number, x = 0, y = 0): void {
+        const client = this.registry.getClient(item.registrationKey);
+        if (!client)
+            return;
+        if (button === 3 || (button === 1 && item.itemIsMenu)) {
+            this.#showContextMenu(item, x, y);
+        } else {
+            this.#menu.close();
+            client.call(button === 2 ? 'SecondaryActivate' : 'Activate', x, y);
         }
+    }
+
+    #addScrollController(actor: Clutter.Actor, item: IndicatorViewModel): void {
         const scroll = new Clutter.ScrollController({
             flags: Clutter.ScrollControllerFlags.SCROLL_HORIZONTAL |
                 Clutter.ScrollControllerFlags.SCROLL_VERTICAL,
@@ -153,13 +158,13 @@ export class TrayButton {
             client?.scroll(Math.round(dx * 120), 'horizontal');
     }
 
-    #activate(item: IndicatorViewModel): void {
+    #showContextMenu(item: IndicatorViewModel, x: number, y: number): void {
         const client = this.registry.getClient(item.registrationKey);
         if (!client)
             return;
         if (!item.menuPath) {
-            client.call('Activate');
             this.#menu.close();
+            client.call('ContextMenu', x, y);
             return;
         }
         const menuClient = new DBusMenuClient(client.connection, item.busName, item.menuPath);

@@ -5,5 +5,5 @@
   "shell-version": ["50", "51"],
   "settings-schema": "org.gnome.shell.extensions.real-tray",
   "url": "https://git.jacksonbarker.ca/jackson/gnome-real-tray",
-  "version": 15
+  "version": 16
 }
