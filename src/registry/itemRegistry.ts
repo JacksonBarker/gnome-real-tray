@@ -15,6 +15,7 @@ export interface RegistrySnapshot {
 export class ItemRegistry {
     readonly changed = new Observable<RegistrySnapshot>();
     readonly #clients = new Map<string, StatusNotifierItemClient>();
+    readonly #clientDisconnectors = new Map<string, Array<() => void>>();
     #rules: RulesDocument;
 
     constructor(readonly connection: Gio.DBusConnection, rules: RulesDocument) {
@@ -28,8 +29,10 @@ export class ItemRegistry {
             this.connection, registration.busName, registration.objectPath, registration.key,
         );
         this.#clients.set(registration.key, client);
-        client.changed.connect(() => this.#emit());
-        client.removed.connect(() => this.remove(registration.key));
+        this.#clientDisconnectors.set(registration.key, [
+            client.changed.connect(() => this.#emit()),
+            client.removed.connect(() => this.remove(registration.key)),
+        ]);
         try {
             await client.initialize();
             this.#emit();
@@ -43,6 +46,7 @@ export class ItemRegistry {
         const client = this.#clients.get(key);
         if (!client)
             return;
+        this.#disconnectClient(key);
         client.destroy();
         this.#clients.delete(key);
         this.#emit();
@@ -84,9 +88,17 @@ export class ItemRegistry {
         this.changed.emit(this.snapshot());
     }
 
+    #disconnectClient(key: string): void {
+        for (const disconnect of this.#clientDisconnectors.get(key) ?? [])
+            disconnect();
+        this.#clientDisconnectors.delete(key);
+    }
+
     destroy(): void {
-        for (const client of this.#clients.values())
+        for (const [key, client] of this.#clients) {
+            this.#disconnectClient(key);
             client.destroy();
+        }
         this.#clients.clear();
         this.changed.clear();
     }

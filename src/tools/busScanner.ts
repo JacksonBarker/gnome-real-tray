@@ -8,9 +8,13 @@ const MAX_OBJECTS_PER_SERVICE = 256;
 const CALL_TIMEOUT_MS = 2500;
 
 async function call(busName: string, path: string, method: string, parameters: GLib.Variant | null, reply: string): Promise<GLib.Variant> {
+    const interfaceName = method === 'ListNames'
+        ? 'org.freedesktop.DBus'
+        : 'org.freedesktop.DBus.Introspectable';
+    const replyType = new GLib.VariantType(reply);
     return Gio.DBus.session.call(
-        busName, path, method === 'ListNames' ? 'org.freedesktop.DBus' : 'org.freedesktop.DBus.Introspectable',
-        method, parameters, new GLib.VariantType(reply), Gio.DBusCallFlags.NONE, CALL_TIMEOUT_MS, null,
+        busName, path, interfaceName, method, parameters, replyType,
+        Gio.DBusCallFlags.NONE, CALL_TIMEOUT_MS, null,
     );
 }
 

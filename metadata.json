@@ -4,6 +4,6 @@
   "description": "AppIndicator/KStatusNotifierItem support with a real drop-down tray",
   "shell-version": ["50"],
   "settings-schema": "org.gnome.shell.extensions.real-tray",
-  "url": "https://github.com/local/gnome-real-tray",
-  "version": 12
+  "url": "https://git.jacksonbarker.ca/jackson/gnome-real-tray",
+  "version": 13
 }

@@ -2,6 +2,7 @@ import Gio from 'gi://Gio';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import type {IndicatorViewModel} from './model/indicator.js';
+import {clearIconCache} from './icons/iconResolver.js';
 import {calculatePlacement} from './placement/placementPolicy.js';
 import {getMode, getPanelBox} from './settings/settings.js';
 import {RulesStore} from './settings/rulesStore.js';
@@ -18,6 +19,7 @@ export default class RealTrayExtension extends Extension {
     #panelItems: PanelItem[] = [];
     #trayButton: TrayButton | null = null;
     #settingsSignal = 0;
+    #disconnectors: Array<() => void> = [];
 
     enable(): void {
         this.#settings = this.getSettings();
@@ -25,15 +27,20 @@ export default class RealTrayExtension extends Extension {
         this.#registry = new ItemRegistry(Gio.DBus.session, this.#rulesStore.load());
         this.#watcher = new StatusNotifierWatcherService();
 
-        this.#registry.changed.connect(snapshot => this.#render(snapshot.views));
-        this.#watcher.registered.connect(registration => void this.#registry?.add(registration));
-        this.#watcher.unregistered.connect(key => this.#registry?.remove(key));
-        this.#watcher.conflict.connect(() => {
+        const disconnectRegistry = this.#registry.changed.connect(
+            snapshot => this.#render(snapshot.views));
+        const disconnectRegistered = this.#watcher.registered.connect(
+            registration => void this.#registry?.add(registration));
+        const disconnectUnregistered = this.#watcher.unregistered.connect(
+            key => this.#registry?.remove(key));
+        const disconnectConflict = this.#watcher.conflict.connect(() => {
             Main.notify(
                 'Real Tray could not start',
                 'Disable AppIndicator and KStatusNotifierItem Support; it already owns the tray service.',
             );
         });
+        this.#disconnectors.push(
+            disconnectRegistry, disconnectRegistered, disconnectUnregistered, disconnectConflict);
         this.#settingsSignal = this.#settings.connect('changed', (_settings, key) => {
             if (key === 'active-items-json')
                 return;
@@ -43,6 +50,23 @@ export default class RealTrayExtension extends Extension {
         });
         this.#watcher.start(`${this.path}/tools/busScanner.js`);
         this.#render([]);
+    }
+
+    disable(): void {
+        if (this.#settings && this.#settingsSignal)
+            this.#settings.disconnect(this.#settingsSignal);
+        this.#settingsSignal = 0;
+        for (const disconnect of this.#disconnectors)
+            disconnect();
+        this.#disconnectors = [];
+        this.#clearActors();
+        this.#watcher?.destroy();
+        this.#watcher = null;
+        this.#registry?.destroy();
+        this.#registry = null;
+        this.#rulesStore = null;
+        this.#settings = null;
+        clearIconCache();
     }
 
     #render(views: readonly IndicatorViewModel[]): void {
@@ -72,12 +96,12 @@ export default class RealTrayExtension extends Extension {
                 this.#registry!, this.#settings!.get_uint('tray-icon-size'), compact,
                 this.#settings!.get_string('tray-button-icon'),
             );
+            const trayLayout = this.#settings!.get_enum('tray-layout') === 0 ? 'grid' : 'rows';
+            const gridColumns = this.#settings!.get_uint('grid-columns');
+            const gridIconSize = this.#settings!.get_uint('grid-icon-size');
+            const attentionBadge = this.#settings!.get_boolean('attention-badge');
             this.#trayButton.update(
-                placement.tray,
-                this.#settings!.get_enum('tray-layout') === 0 ? 'grid' : 'rows',
-                this.#settings!.get_uint('grid-columns'), this.#settings!.get_uint('grid-icon-size'),
-                this.#settings!.get_boolean('attention-badge'),
-            );
+                placement.tray, trayLayout, gridColumns, gridIconSize, attentionBadge);
             Main.panel.addToStatusArea('real-tray', this.#trayButton.actor, trayPosition, box);
         };
 
@@ -104,16 +128,4 @@ export default class RealTrayExtension extends Extension {
         this.#trayButton = null;
     }
 
-    disable(): void {
-        this.#clearActors();
-        if (this.#settings && this.#settingsSignal)
-            this.#settings.disconnect(this.#settingsSignal);
-        this.#settingsSignal = 0;
-        this.#watcher?.destroy();
-        this.#watcher = null;
-        this.#registry?.destroy();
-        this.#registry = null;
-        this.#rulesStore = null;
-        this.#settings = null;
-    }
 }

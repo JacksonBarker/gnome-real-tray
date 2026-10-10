@@ -64,7 +64,7 @@ export class StatusNotifierItemClient {
     #refreshTimer = 0;
     #refreshing = false;
     #refreshAgain = false;
-    #destroyed = false;
+    readonly #cancellable = new Gio.Cancellable();
     model: StatusNotifierItemModel;
 
     constructor(
@@ -93,13 +93,14 @@ export class StatusNotifierItemClient {
         }
         this.#refreshing = true;
         try {
+            const parameters = new GLib.Variant('(s)', [SNI_INTERFACE]);
+            const replyType = new GLib.VariantType('(a{sv})');
             const result = await this.connection.call(
                 this.busName, this.objectPath, PROPERTIES_INTERFACE, 'GetAll',
-                new GLib.Variant('(s)', [SNI_INTERFACE]), new GLib.VariantType('(a{sv})'),
-                Gio.DBusCallFlags.NONE, 5000, null,
+                parameters, replyType, Gio.DBusCallFlags.NONE, 5000, this.#cancellable,
             );
             const unpacked = result.deepUnpack() as [PropertyMap];
-            if (this.#destroyed)
+            if (this.#cancellable.is_cancelled())
                 return;
             this.#properties = unpacked[0];
             this.#updateModel();
@@ -107,7 +108,7 @@ export class StatusNotifierItemClient {
                 this.changed.emit(this);
         } finally {
             this.#refreshing = false;
-            if (this.#refreshAgain && !this.#destroyed) {
+            if (this.#refreshAgain && !this.#cancellable.is_cancelled()) {
                 this.#refreshAgain = false;
                 this.#scheduleRefresh();
             }
@@ -115,17 +116,20 @@ export class StatusNotifierItemClient {
     }
 
     #subscribe(): void {
+        const onPropertiesChanged = (
+            _connection: Gio.DBusConnection, _sender: string | null,
+            _path: string, _iface: string, _signal: string, parameters: GLib.Variant,
+        ): void => {
+            const [iface, changed] = parameters.deepUnpack() as [string, PropertyMap, string[]];
+            if (iface !== SNI_INTERFACE)
+                return;
+            Object.assign(this.#properties, changed);
+            this.#updateModel();
+            this.changed.emit(this);
+        };
         this.#propertySignal = this.connection.signal_subscribe(
             this.busName, PROPERTIES_INTERFACE, 'PropertiesChanged', this.objectPath,
-            SNI_INTERFACE, Gio.DBusSignalFlags.NONE,
-            (_connection, _sender, _path, _iface, _signal, parameters) => {
-                const [iface, changed] = parameters.deepUnpack() as [string, PropertyMap, string[]];
-                if (iface !== SNI_INTERFACE)
-                    return;
-                Object.assign(this.#properties, changed);
-                this.#updateModel();
-                this.changed.emit(this);
-            },
+            SNI_INTERFACE, Gio.DBusSignalFlags.NONE, onPropertiesChanged,
         );
         this.#sniSignal = this.connection.signal_subscribe(
             this.busName, SNI_INTERFACE, null, this.objectPath,
@@ -139,7 +143,7 @@ export class StatusNotifierItemClient {
     }
 
     #scheduleRefresh(): void {
-        if (this.#destroyed || this.#refreshTimer)
+        if (this.#cancellable.is_cancelled() || this.#refreshTimer)
             return;
         // Ayatana implementations can emit NewIcon immediately before replacing
         // their temporary icon file. Debouncing also folds signal bursts into one
@@ -147,7 +151,7 @@ export class StatusNotifierItemClient {
         this.#refreshTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 75, () => {
             this.#refreshTimer = 0;
             void this.#refreshProperties(true).catch(error => {
-                if (!this.#destroyed)
+                if (!this.#cancellable.is_cancelled())
                     console.warn(`Real Tray: item refresh failed: ${String(error)}`);
             });
             return GLib.SOURCE_REMOVE;
@@ -176,30 +180,39 @@ export class StatusNotifierItemClient {
     call(method: 'Activate' | 'SecondaryActivate' | 'ContextMenu', x = 0, y = 0): void {
         void this.connection.call(
             this.busName, this.objectPath, SNI_INTERFACE, method,
-            new GLib.Variant('(ii)', [x, y]), null, Gio.DBusCallFlags.NONE, 3000, null,
-        ).catch(error => console.warn(`Real Tray: ${method} failed: ${String(error)}`));
+            new GLib.Variant('(ii)', [x, y]), null,
+            Gio.DBusCallFlags.NONE, 3000, this.#cancellable,
+        ).catch(error => {
+            if (!this.#cancellable.is_cancelled())
+                console.warn(`Real Tray: ${method} failed: ${String(error)}`);
+        });
     }
 
     scroll(delta: number, orientation: 'horizontal' | 'vertical'): void {
+        const parameters = new GLib.Variant('(is)', [Math.trunc(delta), orientation]);
         void this.connection.call(
             this.busName, this.objectPath, SNI_INTERFACE, 'Scroll',
-            new GLib.Variant('(is)', [Math.trunc(delta), orientation]), null,
-            Gio.DBusCallFlags.NONE, 3000, null,
-        ).catch(error => console.warn(`Real Tray: Scroll failed: ${String(error)}`));
+            parameters, null, Gio.DBusCallFlags.NONE, 3000, this.#cancellable,
+        ).catch(error => {
+            if (!this.#cancellable.is_cancelled())
+                console.warn(`Real Tray: Scroll failed: ${String(error)}`);
+        });
     }
 
     destroy(): void {
-        if (this.#destroyed)
-            return;
-        this.#destroyed = true;
-        if (this.#propertySignal)
-            this.connection.signal_unsubscribe(this.#propertySignal);
-        if (this.#sniSignal)
-            this.connection.signal_unsubscribe(this.#sniSignal);
         if (this.#refreshTimer)
             GLib.source_remove(this.#refreshTimer);
+        this.#refreshTimer = 0;
+        this.#cancellable.cancel();
+        if (this.#propertySignal)
+            this.connection.signal_unsubscribe(this.#propertySignal);
+        this.#propertySignal = 0;
+        if (this.#sniSignal)
+            this.connection.signal_unsubscribe(this.#sniSignal);
+        this.#sniSignal = 0;
         if (this.#nameWatch)
             Gio.bus_unwatch_name(this.#nameWatch);
+        this.#nameWatch = 0;
         this.changed.clear();
         this.removed.clear();
     }
