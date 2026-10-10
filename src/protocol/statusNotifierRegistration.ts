@@ -9,8 +9,7 @@ export interface Registration {
 export type UniqueNameResolver = (busName: string) => Promise<string>;
 
 export class StatusNotifierRegistrationIndex {
-    readonly #registrations = new Map<string, Registration>();
-    #active = true;
+    #registrations: Map<string, Registration> | null = new Map();
 
     async add(service: string, sender: string, resolveUniqueName: UniqueNameResolver): Promise<Registration | null> {
         const isPath = service.startsWith('/');
@@ -21,7 +20,7 @@ export class StatusNotifierRegistrationIndex {
         const objectPath = isPath ? service : DEFAULT_ITEM_PATH;
         const key = `${busName}${objectPath}`;
 
-        if (!this.#active || this.#registrations.has(key))
+        if (!this.#registrations || this.#registrations.has(key))
             return null;
 
         const registration = {key, busName, objectPath};
@@ -30,15 +29,15 @@ export class StatusNotifierRegistrationIndex {
     }
 
     remove(key: string): boolean {
-        return this.#registrations.delete(key);
+        return this.#registrations?.delete(key) ?? false;
     }
 
     keys(): string[] {
-        return [...this.#registrations.keys()];
+        return this.#registrations ? [...this.#registrations.keys()] : [];
     }
 
     destroy(): void {
-        this.#active = false;
-        this.#registrations.clear();
+        this.#registrations?.clear();
+        this.#registrations = null;
     }
 }

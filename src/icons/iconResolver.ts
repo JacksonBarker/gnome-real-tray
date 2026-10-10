@@ -6,6 +6,10 @@ import type {IconSource} from '../model/indicator.js';
 
 const iconThemes = new Map<string, St.IconTheme>();
 
+export function clearIconCache(): void {
+    iconThemes.clear();
+}
+
 function bytesIcon(path: string): Gio.BytesIcon | null {
     try {
         const [loaded, contents] = GLib.file_get_contents(path);

@@ -29,20 +29,23 @@ export class DBusMenuClient {
     constructor(readonly connection: Gio.DBusConnection, readonly busName: string, readonly objectPath: string) {}
 
     async getLayout(): Promise<MenuNode[]> {
+        const parameters = new GLib.Variant('(iias)', [0, -1, []]);
         const result = await this.connection.call(
             this.busName, this.objectPath, 'com.canonical.dbusmenu', 'GetLayout',
-            new GLib.Variant('(iias)', [0, -1, []]), null,
-            Gio.DBusCallFlags.NONE, 5000, null,
+            parameters, null, Gio.DBusCallFlags.NONE, 5000, null,
         );
         const [, layout] = result.deepUnpack() as [number, RawLayout];
         return parseLayout(layout).children;
     }
 
     event(id: number, event: 'clicked' | 'hovered' | 'opened' | 'closed'): void {
-        void this.connection.call(
+        const eventData = new GLib.Variant('s', '');
+        const parameters = new GLib.Variant('(isvu)', [id, event, eventData, 0]);
+        const pending = this.connection.call(
             this.busName, this.objectPath, 'com.canonical.dbusmenu', 'Event',
-            new GLib.Variant('(isvu)', [id, event, new GLib.Variant('s', ''), 0]),
-            null, Gio.DBusCallFlags.NONE, 3000, null,
-        ).catch(error => console.warn(`Real Tray: DBusMenu event failed: ${String(error)}`));
+            parameters, null, Gio.DBusCallFlags.NONE, 3000, null,
+        );
+        void pending.catch(
+            error => console.warn(`Real Tray: DBusMenu event failed: ${String(error)}`));
     }
 }

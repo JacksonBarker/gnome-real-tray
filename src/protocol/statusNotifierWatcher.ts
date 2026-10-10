@@ -59,6 +59,8 @@ export class StatusNotifierWatcherService {
         if (!this.#scannerPath || this.#cancellable.is_cancelled())
             return;
         try {
+            // Introspection walks arbitrary service trees, so run it outside the
+            // GNOME Shell process and accept only validated records from stdout.
             this.#scanner = Gio.Subprocess.new(
                 ['gjs', '-m', this.#scannerPath],
                 Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
@@ -99,10 +101,13 @@ export class StatusNotifierWatcherService {
     }
 
     async #resolveUniqueName(busName: string): Promise<string> {
+        const parameters = new GLib.Variant('(s)', [busName]);
+        const replyType = new GLib.VariantType('(s)');
+        const dbusName = 'org.freedesktop.DBus';
+        const dbusPath = '/org/freedesktop/DBus';
         const reply = await this.#connection!.call(
-            'org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus', 'GetNameOwner',
-            new GLib.Variant('(s)', [busName]), new GLib.VariantType('(s)'),
-            Gio.DBusCallFlags.NONE, 5000, this.#cancellable,
+            dbusName, dbusPath, dbusName, 'GetNameOwner',
+            parameters, replyType, Gio.DBusCallFlags.NONE, 5000, this.#cancellable,
         );
         const [owner] = reply.deepUnpack();
         return owner;
@@ -158,6 +163,7 @@ export class StatusNotifierWatcherService {
         this.#exported?.unexport();
         this.#exported = null;
         this.#implementation = null;
+        this.#connection = null;
         if (this.#ownerId)
             Gio.bus_unown_name(this.#ownerId);
         this.#ownerId = 0;
