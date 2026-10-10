@@ -73,7 +73,10 @@ export class TrayButton {
             can_focus: false,
             style_class: 'real-tray-grid-holder',
         });
-        const vertical = new St.BoxLayout({vertical: true, style_class: 'real-tray-grid'});
+        const vertical = new St.BoxLayout({
+            orientation: Clutter.Orientation.VERTICAL,
+            style_class: 'real-tray-grid',
+        });
         const cellSize = this.#gridIconSize + 16;
         const gridWidth = this.#gridColumns * cellSize + (this.#gridColumns - 1) * 6;
         vertical.set_width(gridWidth);
@@ -99,8 +102,7 @@ export class TrayButton {
         });
         entry.insert_child_at_index(icon, 0);
         entry.connect('activate', () => this.#activate(item));
-        entry.connect('button-press-event', (_actor, event) => this.#handleButton(item, event));
-        entry.connect('scroll-event', (_actor, event) => this.#handleScroll(item, event));
+        this.#addInputControllers(entry, item);
         return entry;
     }
 
@@ -116,29 +118,39 @@ export class TrayButton {
             child: icon,
         });
         button.connect('clicked', () => this.#activate(item));
-        button.connect('button-press-event', (_actor, event) => this.#handleButton(item, event));
-        button.connect('scroll-event', (_actor, event) => this.#handleScroll(item, event));
+        this.#addInputControllers(button, item);
         return button;
     }
 
-    #handleButton(item: IndicatorViewModel, event: Clutter.Event): typeof Clutter.EVENT_PROPAGATE {
-        const client = this.registry.getClient(item.registrationKey);
-        const buttonNumber = event.get_button();
-        if (buttonNumber === 2)
-            client?.call('SecondaryActivate');
-        else if (buttonNumber === 3)
-            client?.call('ContextMenu');
-        return Clutter.EVENT_PROPAGATE;
+    #addInputControllers(actor: Clutter.Actor, item: IndicatorViewModel): void {
+        for (const buttonNumber of [2, 3]) {
+            const click = new Clutter.ClickGesture({
+                required_button: buttonNumber,
+                recognize_on_press: true,
+            });
+            click.connect('recognize', () => {
+                this.registry.getClient(item.registrationKey)?.call(
+                    buttonNumber === 2 ? 'SecondaryActivate' : 'ContextMenu',
+                );
+            });
+            actor.add_action(click);
+        }
+        const scroll = new Clutter.ScrollController({
+            flags: Clutter.ScrollControllerFlags.SCROLL_HORIZONTAL |
+                Clutter.ScrollControllerFlags.SCROLL_VERTICAL,
+        });
+        scroll.connect('scroll', (_controller, _sprite, _source, dx, dy) => {
+            this.#handleScroll(item, dx, dy);
+        });
+        actor.add_action(scroll);
     }
 
-    #handleScroll(item: IndicatorViewModel, event: Clutter.Event): typeof Clutter.EVENT_STOP {
-        const [dx, dy] = event.get_scroll_delta();
+    #handleScroll(item: IndicatorViewModel, dx: number, dy: number): void {
         const client = this.registry.getClient(item.registrationKey);
         if (Math.abs(dy) >= Math.abs(dx))
             client?.scroll(Math.round(dy * 120), 'vertical');
         else
             client?.scroll(Math.round(dx * 120), 'horizontal');
-        return Clutter.EVENT_STOP;
     }
 
     #activate(item: IndicatorViewModel): void {

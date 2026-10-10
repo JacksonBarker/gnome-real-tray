@@ -1,6 +1,6 @@
 # Real Tray
 
-Real Tray is an original GNOME Shell 50 extension that hosts
+Real Tray is an original GNOME Shell 50 and 51 extension that hosts
 AppIndicator/KStatusNotifierItem applications in a proper drop-down tray.
 
 It supports three modes:
