@@ -116,6 +116,7 @@ export class StatusNotifierWatcherService {
     async #register(service: string, sender: string): Promise<void> {
         const registration = await this.#registrations.add(
             service, sender, busName => this.#resolveUniqueName(busName),
+            existing => this.registered.emit(existing),
         );
         if (!registration)
             return;

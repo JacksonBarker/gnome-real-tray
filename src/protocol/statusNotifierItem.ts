@@ -5,6 +5,7 @@ import {normalizeIdentity} from '../identity/indicatorIdentity.js';
 import {Observable} from '../util/events.js';
 import {PROPERTIES_INTERFACE, SNI_INTERFACE} from './interfaces.js';
 import '../util/promisify.js';
+import {usableMenuPath} from '../model/menu.js';
 import {iconNameSource} from '../icons/iconSource.js';
 
 type PropertyMap = Record<string, GLib.Variant>;
@@ -64,6 +65,9 @@ export class StatusNotifierItemClient {
     #refreshTimer = 0;
     #refreshing = false;
     #refreshAgain = false;
+    #failures = 0;
+    #loaded = false;
+    #activationUnavailable = false;
     readonly #cancellable = new Gio.Cancellable();
     model: StatusNotifierItemModel;
 
@@ -83,10 +87,24 @@ export class StatusNotifierItemClient {
 
     async initialize(): Promise<void> {
         this.#subscribe();
-        await this.#refreshProperties(false);
+        await this.refresh();
     }
 
-    async #refreshProperties(emitChange: boolean): Promise<void> {
+    async refresh(): Promise<void> {
+        if (this.#cancellable.is_cancelled())
+            return;
+        try {
+            await this.#refreshProperties();
+        } catch (error) {
+            if (this.#cancellable.is_cancelled())
+                return;
+            console.warn(`Real Tray: item refresh failed: ${String(error)}`);
+            if (++this.#failures <= 4)
+                this.#scheduleRefresh(250 * 2 ** (this.#failures - 1));
+        }
+    }
+
+    async #refreshProperties(): Promise<void> {
         if (this.#refreshing) {
             this.#refreshAgain = true;
             return;
@@ -102,10 +120,11 @@ export class StatusNotifierItemClient {
             const unpacked = result.deepUnpack() as [PropertyMap];
             if (this.#cancellable.is_cancelled())
                 return;
+            this.#failures = 0;
+            this.#loaded = true;
             this.#properties = unpacked[0];
             this.#updateModel();
-            if (emitChange)
-                this.changed.emit(this);
+            this.changed.emit(this);
         } finally {
             this.#refreshing = false;
             if (this.#refreshAgain && !this.#cancellable.is_cancelled()) {
@@ -120,10 +139,14 @@ export class StatusNotifierItemClient {
             _connection: Gio.DBusConnection, _sender: string | null,
             _path: string, _iface: string, _signal: string, parameters: GLib.Variant,
         ): void => {
-            const [iface, changed] = parameters.deepUnpack() as [string, PropertyMap, string[]];
+            const [iface, changed, invalidated] = parameters.deepUnpack() as [string, PropertyMap, string[]];
             if (iface !== SNI_INTERFACE)
                 return;
             Object.assign(this.#properties, changed);
+            if (!this.#loaded || invalidated.length > 0) {
+                this.#scheduleRefresh();
+                return;
+            }
             this.#updateModel();
             this.changed.emit(this);
         };
@@ -142,18 +165,15 @@ export class StatusNotifierItemClient {
         );
     }
 
-    #scheduleRefresh(): void {
+    #scheduleRefresh(delay = 75): void {
         if (this.#cancellable.is_cancelled() || this.#refreshTimer)
             return;
         // Ayatana implementations can emit NewIcon immediately before replacing
         // their temporary icon file. Debouncing also folds signal bursts into one
         // GetAll call.
-        this.#refreshTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 75, () => {
+        this.#refreshTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, delay, () => {
             this.#refreshTimer = 0;
-            void this.#refreshProperties(true).catch(error => {
-                if (!this.#cancellable.is_cancelled())
-                    console.warn(`Real Tray: item refresh failed: ${String(error)}`);
-            });
+            void this.refresh();
             return GLib.SOURCE_REMOVE;
         });
     }
@@ -168,7 +188,7 @@ export class StatusNotifierItemClient {
                 unpackString(this.#properties, 'DesktopEntry'), unpackString(this.#properties, 'Id')),
             title: unpackString(this.#properties, 'Title'),
             status: status(unpackString(this.#properties, 'Status')),
-            menuPath: unpackString(this.#properties, 'Menu'),
+            menuPath: usableMenuPath(unpackString(this.#properties, 'Menu')),
             itemIsMenu: unpackBoolean(this.#properties, 'ItemIsMenu'),
             icon: resolvedIcon(this.#properties, 'IconName', 'IconPixmap', iconThemePath),
             attentionIcon: attention,
@@ -177,14 +197,26 @@ export class StatusNotifierItemClient {
         };
     }
 
-    call(method: 'Activate' | 'SecondaryActivate' | 'ContextMenu', x = 0, y = 0): void {
+    call(method: 'Activate' | 'SecondaryActivate' | 'ContextMenu', x = 0, y = 0, unavailable?: () => void): void {
+        if (this.#cancellable.is_cancelled())
+            return;
+        if (method === 'Activate' && this.#activationUnavailable) {
+            unavailable?.();
+            return;
+        }
         void this.connection.call(
             this.busName, this.objectPath, SNI_INTERFACE, method,
             new GLib.Variant('(ii)', [x, y]), null,
             Gio.DBusCallFlags.NONE, 3000, this.#cancellable,
-        ).catch(error => {
-            if (!this.#cancellable.is_cancelled())
+        ).catch((error: GLib.Error) => {
+            if (this.#cancellable.is_cancelled())
+                return;
+            if (method === 'Activate' && error.matches(Gio.DBusError, Gio.DBusError.UNKNOWN_METHOD)) {
+                this.#activationUnavailable = true;
+                unavailable?.();
+            } else {
                 console.warn(`Real Tray: ${method} failed: ${String(error)}`);
+            }
         });
     }
 

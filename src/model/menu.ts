@@ -7,6 +7,7 @@ export interface MenuNode {
     toggleType: 'checkmark' | 'radio' | null;
     toggleState: -1 | 0 | 1;
     iconName: string | null;
+    submenu: boolean;
     children: MenuNode[];
 }
 
@@ -25,4 +26,8 @@ export function decodeDBusMenuLabel(label: string): string {
         }
     }
     return decoded;
+}
+
+export function usableMenuPath(path: string | null): string | null {
+    return path && path !== '/NO_DBUSMENU' ? path : null;
 }

@@ -20,6 +20,8 @@ export const DBUS_MENU_XML = `<node>
   <interface name="com.canonical.dbusmenu">
     <method name="GetLayout"><arg type="i" direction="in"/><arg type="i" direction="in"/><arg type="as" direction="in"/><arg type="u" direction="out"/><arg type="(ia{sv}av)" direction="out"/></method>
     <method name="Event"><arg type="i" direction="in"/><arg type="s" direction="in"/><arg type="v" direction="in"/><arg type="u" direction="in"/></method>
+    <method name="AboutToShow"><arg type="i" direction="in"/><arg type="b" direction="out"/></method>
+    <signal name="ItemsPropertiesUpdated"><arg type="a(ia{sv})"/><arg type="a(ias)"/></signal>
     <signal name="LayoutUpdated"><arg type="u"/><arg type="i"/></signal>
   </interface>
 </node>`;

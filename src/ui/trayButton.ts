@@ -7,8 +7,11 @@ import type {IndicatorViewModel} from '../model/indicator.js';
 import {toGIcon} from '../icons/iconResolver.js';
 import type {ItemRegistry} from '../registry/itemRegistry.js';
 import {DBusMenuClient} from '../protocol/dbusMenu.js';
-import {populateIndicatorMenu} from './indicatorMenu.js';
+import {IndicatorMenu} from './indicatorMenu.js';
 import {applyPanelSpacing} from './panelSpacing.js';
+import {createIndicatorActions} from './indicatorActions.js';
+import type {StatusNotifierItemClient} from '../protocol/statusNotifierItem.js';
+import {addIndicatorScroll} from './indicatorScroll.js';
 import {addIndicatorClicks} from './indicatorClicks.js';
 
 export class TrayButton {
@@ -21,6 +24,11 @@ export class TrayButton {
     #gridColumns = 4;
     #gridIconSize = 32;
     #menuSignal: number;
+    #indicatorMenu: IndicatorMenu | null = null;
+    #contextKey: string | null = null;
+    #contextPath: string | null = null;
+    #structure = '';
+    #entries = new Map<string, {actor: St.Widget; icon: St.Icon; label?: St.Label}>();
 
     constructor(readonly registry: ItemRegistry, iconSize: number, compact: boolean, requestedIcon: string) {
         this.actor = new PanelMenu.Button(0.5, 'Real Tray');
@@ -40,7 +48,7 @@ export class TrayButton {
         box.add_child(this.#badge);
         this.actor.add_child(box);
         this.#menuSignal = this.#menu.connect('open-state-changed', (_menu, open) => {
-            if (open)
+            if ((open && !this.#indicatorMenu) || (!open && this.#indicatorMenu))
                 this.#rebuild();
         });
     }
@@ -52,10 +60,43 @@ export class TrayButton {
         this.#gridIconSize = iconSize;
         this.actor.accessible_name = `Real Tray, ${items.length} items`;
         this.#badge.visible = attentionBadge && items.some(item => item.status === 'NeedsAttention');
-        this.#rebuild();
+        if (this.#contextKey) {
+            const context = items.find(item => item.registrationKey === this.#contextKey);
+            if (context && context.menuPath === this.#contextPath)
+                return;
+            this.#rebuild();
+        } else {
+            const structure = JSON.stringify([layout, this.#gridColumns, iconSize, items.map(item => item.registrationKey)]);
+            if (structure !== this.#structure) {
+                this.#structure = structure;
+                this.#rebuild();
+            } else {
+                for (const item of items) {
+                    const entry = this.#entries.get(item.registrationKey)!;
+                    entry.icon.gicon = toGIcon(item.displayIcon);
+                    entry.actor.accessible_name = item.displayName;
+                    if (entry.label)
+                        entry.label.text = item.displayName;
+                }
+            }
+        }
+    }
+
+    configure(iconSize: number, compact: boolean, requestedIcon: string): void {
+        const fallback = 'view-grid-symbolic';
+        const name = requestedIcon.trim() || fallback;
+        this.#icon.gicon = Gio.ThemedIcon.new_from_names(name === fallback ? [fallback] : [name, fallback]);
+        this.#icon.icon_size = iconSize;
+        applyPanelSpacing(this.actor, compact);
     }
 
     #rebuild(): void {
+        this.#indicatorMenu?.destroy();
+        this.#indicatorMenu = null;
+        this.#contextKey = null;
+        this.#contextPath = null;
+        this.#structure = JSON.stringify([this.#layout, this.#gridColumns, this.#gridIconSize, this.#items.map(item => item.registrationKey)]);
+        this.#entries.clear();
         this.#menu.removeAll();
         if (this.#items.length === 0) {
             const empty = new PopupMenu.PopupMenuItem('No active indicators');
@@ -102,8 +143,9 @@ export class TrayButton {
             style_class: 'popup-menu-icon',
         });
         entry.insert_child_at_index(icon, 0);
-        addIndicatorClicks(entry, (button, x, y) => this.#click(item, button, x, y));
-        this.#addScrollController(entry, item);
+        addIndicatorClicks(entry, this.#actions(item.registrationKey));
+        addIndicatorScroll(entry, () => this.registry.getClient(item.registrationKey));
+        this.#entries.set(item.registrationKey, {actor: entry, icon, label: entry.label});
         return entry;
     }
 
@@ -118,64 +160,44 @@ export class TrayButton {
             height: cellSize,
             child: icon,
         });
+        const click = this.#actions(item.registrationKey);
         button.connect('clicked', () => {
             const [x, y] = button.get_transformed_position();
-            this.#click(item, 1, Math.round(x), Math.round(y));
+            click(1, Math.round(x), Math.round(y));
         });
-        addIndicatorClicks(button, (number, x, y) => this.#click(item, number, x, y), false);
-        this.#addScrollController(button, item);
+        addIndicatorClicks(button, click, false);
+        addIndicatorScroll(button, () => this.registry.getClient(item.registrationKey));
+        this.#entries.set(item.registrationKey, {actor: button, icon});
         return button;
     }
 
-    #click(item: IndicatorViewModel, button: number, x = 0, y = 0): void {
-        const client = this.registry.getClient(item.registrationKey);
-        if (!client)
-            return;
-        if (button === 3 || (button === 1 && item.itemIsMenu)) {
-            this.#showContextMenu(item, x, y);
-        } else {
-            this.#menu.close();
-            client.call(button === 2 ? 'SecondaryActivate' : 'Activate', x, y);
-        }
+    #actions(key: string): ReturnType<typeof createIndicatorActions> {
+        return createIndicatorActions(
+            () => {
+                const view = this.#items.find(item => item.registrationKey === key);
+                const client = this.registry.getClient(key);
+                return view && client ? {view, client} : null;
+            },
+            () => this.#menu.close(),
+            (target, path) => this.#showMenu(target.client, target.view, path),
+        );
     }
 
-    #addScrollController(actor: Clutter.Actor, item: IndicatorViewModel): void {
-        const scroll = new Clutter.ScrollController({
-            flags: Clutter.ScrollControllerFlags.SCROLL_HORIZONTAL |
-                Clutter.ScrollControllerFlags.SCROLL_VERTICAL,
-        });
-        scroll.connect('scroll', (_controller, _sprite, _source, dx, dy) => {
-            this.#handleScroll(item, dx, dy);
-        });
-        actor.add_action(scroll);
-    }
-
-    #handleScroll(item: IndicatorViewModel, dx: number, dy: number): void {
-        const client = this.registry.getClient(item.registrationKey);
-        if (Math.abs(dy) >= Math.abs(dx))
-            client?.scroll(Math.round(dy * 120), 'vertical');
-        else
-            client?.scroll(Math.round(dx * 120), 'horizontal');
-    }
-
-    #showContextMenu(item: IndicatorViewModel, x: number, y: number): void {
-        const client = this.registry.getClient(item.registrationKey);
-        if (!client)
-            return;
-        if (!item.menuPath) {
-            this.#menu.close();
-            client.call('ContextMenu', x, y);
-            return;
-        }
-        const menuClient = new DBusMenuClient(client.connection, item.busName, item.menuPath);
-        void populateIndicatorMenu(this.#menu, menuClient).then(() => {
-            const back = new PopupMenu.PopupMenuItem('‹ Back');
-            back.connect('activate', () => this.#rebuild());
-            this.#menu.addMenuItem(back, 0);
-        });
+    #showMenu(client: StatusNotifierItemClient, item: IndicatorViewModel, path: string): void {
+        this.#indicatorMenu?.destroy();
+        this.#indicatorMenu = null;
+        this.#entries.clear();
+        this.#contextKey = item.registrationKey;
+        this.#contextPath = path;
+        const menuClient = new DBusMenuClient(client.connection, item.busName, path);
+        this.#indicatorMenu = new IndicatorMenu(this.#menu, menuClient, () => this.#rebuild());
+        this.#menu.open();
     }
 
     destroy(): void {
+        this.#indicatorMenu?.destroy();
+        this.#indicatorMenu = null;
+        this.#entries.clear();
         this.#menu.disconnect(this.#menuSignal);
         this.actor.destroy();
     }

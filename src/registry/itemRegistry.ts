@@ -23,8 +23,11 @@ export class ItemRegistry {
     }
 
     async add(registration: Registration): Promise<void> {
-        if (this.#clients.has(registration.key))
+        const existing = this.#clients.get(registration.key);
+        if (existing) {
+            await existing.refresh();
             return;
+        }
         const client = new StatusNotifierItemClient(
             this.connection, registration.busName, registration.objectPath, registration.key,
         );
