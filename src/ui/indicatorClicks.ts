@@ -8,7 +8,10 @@ export function addIndicatorClicks(
     primary = true,
 ): void {
     for (const button of primary ? [1, 2, 3] : [2, 3]) {
-        const gesture = new Clutter.ClickGesture({required_button: button});
+        const gesture = new Clutter.ClickGesture({
+            required_button: button,
+            recognize_on_press: button !== 1,
+        });
         gesture.connect('recognize', () => {
             const [x, y] = Clutter.get_current_event().get_coords();
             click(button, Math.round(x), Math.round(y));

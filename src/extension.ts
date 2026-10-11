@@ -1,4 +1,5 @@
 import Gio from 'gi://Gio';
+import type St from 'gi://St';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import type {IndicatorViewModel} from './model/indicator.js';
@@ -16,7 +17,7 @@ export default class RealTrayExtension extends Extension {
     #watcher: StatusNotifierWatcherService | null = null;
     #registry: ItemRegistry | null = null;
     #rulesStore: RulesStore | null = null;
-    #panelItems: PanelItem[] = [];
+    #panelItems = new Map<string, PanelItem>();
     #trayButton: TrayButton | null = null;
     #settingsSignal = 0;
     #disconnectors: Array<() => void> = [];
@@ -79,7 +80,6 @@ export default class RealTrayExtension extends Extension {
         })));
         if (this.#settings.get_string('active-items-json') !== inventory)
             this.#settings.set_string('active-items-json', inventory);
-        this.#clearActors();
         const placement = calculatePlacement(
             views, getMode(this.#settings), this.#settings.get_uint('panel-limit'),
         );
@@ -89,22 +89,44 @@ export default class RealTrayExtension extends Extension {
         const trayFirst = this.#settings.get_enum('tray-button-position') === 0;
         const compact = this.#settings.get_boolean('compact-mode');
 
-        const addTray = (trayPosition: number): void => {
+        const panelKeys = new Set(placement.panel.map(view => view.registrationKey));
+        for (const [key, item] of this.#panelItems) {
+            if (!panelKeys.has(key)) {
+                item.destroy();
+                this.#panelItems.delete(key);
+            }
+        }
+        if (!placement.showTrayButton) {
+            this.#trayButton?.destroy();
+            this.#trayButton = null;
+        }
+        const arrange = (actor: PanelItem['actor'], role: string, index: number, fresh: boolean): void => {
+            if (fresh) {
+                Main.panel.addToStatusArea(role, actor, index, box);
+            } else {
+                const panel = Main.panel as typeof Main.panel & {_leftBox: St.BoxLayout; _centerBox: St.BoxLayout; _rightBox: St.BoxLayout};
+                const target = box === 'left' ? panel._leftBox : box === 'center' ? panel._centerBox : panel._rightBox;
+                const container = actor.container;
+                const parent = container.get_parent();
+                if (parent !== target) {
+                    parent?.remove_child(container);
+                    target.insert_child_at_index(container, index);
+                } else if (target.get_children().indexOf(container) !== index) {
+                    target.set_child_at_index(container, index);
+                }
+            }
+        };
+        const addTray = (index: number): void => {
             if (!placement.showTrayButton)
                 return;
-            this.#trayButton = new TrayButton(
-                this.#registry!, this.#settings!.get_uint('tray-icon-size'), compact,
-                this.#settings!.get_string('tray-button-icon'),
-            );
-            const trayLayout = this.#settings!.get_enum('tray-layout') === 0 ? 'grid' : 'rows';
-            const gridColumns = this.#settings!.get_uint('grid-columns');
-            const gridIconSize = this.#settings!.get_uint('grid-icon-size');
-            const attentionBadge = this.#settings!.get_boolean('attention-badge');
-            this.#trayButton.update(
-                placement.tray, trayLayout, gridColumns, gridIconSize, attentionBadge);
-            Main.panel.addToStatusArea('real-tray', this.#trayButton.actor, trayPosition, box);
+            const fresh = !this.#trayButton;
+            this.#trayButton ??= new TrayButton(this.#registry!, this.#settings!.get_uint('tray-icon-size'), compact,
+                this.#settings!.get_string('tray-button-icon'));
+            this.#trayButton.configure(this.#settings!.get_uint('tray-icon-size'), compact, this.#settings!.get_string('tray-button-icon'));
+            this.#trayButton.update(placement.tray, this.#settings!.get_enum('tray-layout') === 0 ? 'grid' : 'rows',
+                this.#settings!.get_uint('grid-columns'), this.#settings!.get_uint('grid-icon-size'), this.#settings!.get_boolean('attention-badge'));
+            arrange(this.#trayButton.actor, 'real-tray', index, fresh);
         };
-
         if (trayFirst)
             addTray(position);
         const panelStart = trayFirst && placement.showTrayButton ? position + 1 : position;
@@ -112,18 +134,24 @@ export default class RealTrayExtension extends Extension {
             const client = this.#registry!.getClient(view.registrationKey);
             if (!client)
                 return;
-            const item = new PanelItem(view, client, iconSize, compact);
-            this.#panelItems.push(item);
-            Main.panel.addToStatusArea(`real-tray-item-${index}`, item.actor, panelStart + index, box);
+            let item = this.#panelItems.get(view.registrationKey);
+            const fresh = !item;
+            if (!item) {
+                item = new PanelItem(view, client, iconSize, compact);
+                this.#panelItems.set(view.registrationKey, item);
+            } else {
+                item.update(view, iconSize, compact);
+            }
+            arrange(item.actor, `real-tray-item-${view.registrationKey}`, panelStart + index, fresh);
         });
         if (!trayFirst)
             addTray(position + placement.panel.length);
     }
 
     #clearActors(): void {
-        for (const item of this.#panelItems)
+        for (const item of this.#panelItems.values())
             item.destroy();
-        this.#panelItems = [];
+        this.#panelItems.clear();
         this.#trayButton?.destroy();
         this.#trayButton = null;
     }

@@ -2,6 +2,7 @@ import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import {decodeDBusMenuLabel, type MenuNode} from '../model/menu.js';
 import '../util/promisify.js';
+import {Observable} from '../util/events.js';
 
 type RawLayout = [number, Record<string, GLib.Variant>, GLib.Variant[]];
 
@@ -21,18 +22,37 @@ function parseLayout(raw: RawLayout): MenuNode {
         toggleType: unpackProperty(properties, 'toggle-type', null),
         toggleState: toggleState === 0 || toggleState === 1 ? toggleState : -1,
         iconName: unpackProperty(properties, 'icon-name', null),
+        submenu: unpackProperty<string>(properties, 'children-display', '') === 'submenu',
         children: rawChildren.map(child => parseLayout(child.deepUnpack() as RawLayout)),
     };
 }
 
 export class DBusMenuClient {
-    constructor(readonly connection: Gio.DBusConnection, readonly busName: string, readonly objectPath: string) {}
+    readonly changed = new Observable<void>();
+    readonly cancellable = new Gio.Cancellable();
+    #signals: number[] = [];
+
+    constructor(readonly connection: Gio.DBusConnection, readonly busName: string, readonly objectPath: string) {
+        for (const signal of ['LayoutUpdated', 'ItemsPropertiesUpdated']) {
+            this.#signals.push(connection.signal_subscribe(
+                busName, 'com.canonical.dbusmenu', signal, objectPath, null,
+                Gio.DBusSignalFlags.NONE, () => this.changed.emit(undefined),
+            ));
+        }
+    }
+
+    async aboutToShow(id: number): Promise<void> {
+        await this.connection.call(
+            this.busName, this.objectPath, 'com.canonical.dbusmenu', 'AboutToShow',
+            new GLib.Variant('(i)', [id]), null, Gio.DBusCallFlags.NONE, 5000, this.cancellable,
+        );
+    }
 
     async getLayout(): Promise<MenuNode[]> {
         const parameters = new GLib.Variant('(iias)', [0, -1, []]);
         const result = await this.connection.call(
             this.busName, this.objectPath, 'com.canonical.dbusmenu', 'GetLayout',
-            parameters, null, Gio.DBusCallFlags.NONE, 5000, null,
+            parameters, null, Gio.DBusCallFlags.NONE, 5000, this.cancellable,
         );
         const [, layout] = result.deepUnpack() as [number, RawLayout];
         return parseLayout(layout).children;
@@ -43,9 +63,19 @@ export class DBusMenuClient {
         const parameters = new GLib.Variant('(isvu)', [id, event, eventData, 0]);
         const pending = this.connection.call(
             this.busName, this.objectPath, 'com.canonical.dbusmenu', 'Event',
-            parameters, null, Gio.DBusCallFlags.NONE, 3000, null,
+            parameters, null, Gio.DBusCallFlags.NONE, 3000, this.cancellable,
         );
-        void pending.catch(
-            error => console.warn(`Real Tray: DBusMenu event failed: ${String(error)}`));
+        void pending.catch(error => {
+            if (!this.cancellable.is_cancelled())
+                console.warn(`Real Tray: DBusMenu event failed: ${String(error)}`);
+        });
+    }
+
+    destroy(): void {
+        for (const signal of this.#signals)
+            this.connection.signal_unsubscribe(signal);
+        this.#signals = [];
+        this.cancellable.cancel();
+        this.changed.clear();
     }
 }

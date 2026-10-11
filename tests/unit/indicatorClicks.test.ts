@@ -12,8 +12,9 @@ const {Actor, populate} = vi.hoisted(() => {
         menu?: Actor;
         actor = {bin: {set_width: vi.fn()}};
         _clickGesture = {set_enabled: vi.fn()};
-        close = vi.fn();
+        close = vi.fn(() => { this.signals.get('open-state-changed')?.(this, false); });
         toggle = vi.fn();
+        open = vi.fn(() => { this.signals.get('open-state-changed')?.(this, true); });
         connect(name: string, callback: (...args: unknown[]) => void): number {
             this.signals.set(name, callback);
             return 1;
@@ -21,13 +22,14 @@ const {Actor, populate} = vi.hoisted(() => {
         add_child(child: Actor): void { this.children.push(child); }
         insert_child_at_index(child: Actor): void { this.children.push(child); }
         addMenuItem(child: Actor): void { this.children.push(child); }
-        removeAll(): void { this.children = []; }
+        removeAll = vi.fn(() => { this.children = []; });
         get_transformed_position(): [number, number] { return [12, 34]; }
-        add_action(): void {}
+        actions: Actor[] = [];
+        add_action(action: Actor): void { this.actions.push(action); }
         set_width(): void {}
         setSensitive(): void {}
     }
-    return {Actor, populate: vi.fn(async () => {})};
+    return {Actor, populate: vi.fn()};
 });
 vi.mock('gi://Clutter', () => ({default: {
     Orientation: {VERTICAL: 1}, ScrollController: Actor,
@@ -43,7 +45,10 @@ vi.mock('resource:///org/gnome/shell/ui/popupMenu.js', () => ({
 }));
 vi.mock('../../src/icons/iconResolver.js', () => ({toGIcon: vi.fn()}));
 vi.mock('../../src/ui/panelSpacing.js', () => ({applyPanelSpacing: vi.fn()}));
-vi.mock('../../src/ui/indicatorMenu.js', () => ({populateIndicatorMenu: populate}));
+vi.mock('../../src/ui/indicatorMenu.js', () => ({IndicatorMenu: class {
+    constructor(...args: unknown[]) { populate(...args); }
+    destroy = vi.fn();
+}}));
 vi.mock('../../src/protocol/dbusMenu.js', () => ({DBusMenuClient: vi.fn()}));
 vi.mock('../../src/ui/indicatorClicks.js', () => ({
     addIndicatorClicks: (actor: InstanceType<typeof Actor>, click: (button: number, x: number, y: number) => void, primary = true) => {
@@ -55,30 +60,37 @@ vi.mock('../../src/ui/indicatorClicks.js', () => ({
 import {PanelItem} from '../../src/ui/panelItem.js';
 import {TrayButton} from '../../src/ui/trayButton.js';
 
-function setup(surface: 'panel' | 'rows' | 'grid', itemIsMenu = false, menuPath: string | null = '/Menu') {
+function setup(surface: 'panel' | 'rows' | 'grid', itemIsMenu = false, menuPath: string | null = '/Menu', unavailable = false) {
     const view: IndicatorViewModel = {
         registrationKey: 'test', busName: 'test', objectPath: '/StatusNotifierItem',
         identity: {desktopEntry: null, sniId: 'test'}, title: 'Test', status: 'Active',
         menuPath, itemIsMenu, icon: null, attentionIcon: null, overlayIcon: null,
         hidden: false, pinned: false, displayName: 'Test', displayIcon: null, ruleConflict: false,
     };
-    const call = vi.fn();
-    const client = {call} as unknown as StatusNotifierItemClient;
+    const call = vi.fn((method: string, _x: number, _y: number, fallback?: () => void) => {
+        if (method === 'Activate' && unavailable)
+            fallback?.();
+    });
+    const scroll = vi.fn();
+    const client = {call, scroll} as unknown as StatusNotifierItemClient;
     let icon: InstanceType<typeof Actor>;
     let menu: InstanceType<typeof Actor>;
+    let update: (view: IndicatorViewModel) => void;
     if (surface === 'panel') {
         const panel = new PanelItem(view, client, 16, false);
         icon = panel.actor as unknown as InstanceType<typeof Actor>;
         menu = icon.menu!;
+        update = next => panel.update(next, 16, false);
     } else {
         const registry = {getClient: () => client} as unknown as ItemRegistry;
         const tray = new TrayButton(registry, 16, false, '');
         tray.update([view], surface, 5, 32);
+        update = next => tray.update([next], surface, 5, 32);
         menu = (tray.actor as unknown as InstanceType<typeof Actor>).menu!;
         icon = surface === 'rows' ? menu.children[0]! : menu.children[0]!.children[0]!.children[0]!.children[0]!;
     }
     return {
-        call, menu,
+        call, scroll, menu, icon, view, update,
         click: (button: number) => {
             if (surface === 'grid' && button === 1)
                 icon.signals.get('clicked')?.();
@@ -125,6 +137,62 @@ describe.each(['panel', 'rows', 'grid'] as const)('%s indicator clicks', surface
         const {call, click} = setup(surface, false, null);
         click(3);
         expect(call).toHaveBeenCalledWith('ContextMenu', 12, 34);
+    });
+
+    it.each([false, true])('uses native menus for the sentinel (ItemIsMenu=%s)', itemIsMenu => {
+        const {call, click} = setup(surface, itemIsMenu, '/NO_DBUSMENU');
+        populate.mockClear();
+        click(itemIsMenu ? 1 : 3);
+        expect(call).toHaveBeenCalledExactlyOnceWith('ContextMenu', 12, 34);
+        expect(populate).not.toHaveBeenCalled();
+    });
+
+    it('forwards vertical and horizontal scroll', () => {
+        const {icon, scroll} = setup(surface);
+        const handler = icon.actions[0]!.signals.get('scroll')!;
+        handler(null, null, null, 0, 1);
+        handler(null, null, null, -2, 0);
+        expect(scroll.mock.calls).toEqual([[120, 'vertical'], [-240, 'horizontal']]);
+    });
+
+    it('preserves an imported menu through an indicator property update', () => {
+        const test = setup(surface);
+        test.click(3);
+        test.menu.removeAll.mockClear();
+        test.menu.close.mockClear();
+        populate.mockClear();
+        test.update({...test.view, displayName: 'Renamed', status: 'NeedsAttention'});
+        expect(test.menu.removeAll).not.toHaveBeenCalled();
+        expect(test.menu.close).not.toHaveBeenCalled();
+        expect(populate).not.toHaveBeenCalled();
+    });
+
+    it('uses updated ItemIsMenu values when handling clicks on retained actors', () => {
+        const test = setup(surface);
+        test.update({...test.view, itemIsMenu: true});
+        populate.mockClear();
+        test.click(1);
+        expect(test.call).not.toHaveBeenCalled();
+        expect(populate).toHaveBeenCalledOnce();
+    });
+
+    it('opens the exported menu when activation is unavailable', () => {
+        const test = setup(surface, false, '/Menu', true);
+        test.menu.removeAll.mockClear();
+        populate.mockClear();
+        test.click(1);
+        expect(populate).toHaveBeenCalledOnce();
+        expect(test.menu.removeAll).not.toHaveBeenCalled();
+        if (surface === 'panel')
+            expect(test.menu.toggle).toHaveBeenCalledOnce();
+        else
+            expect(test.menu.open).toHaveBeenCalledOnce();
+    });
+
+    it('falls back to the native context menu when no exported menu exists', () => {
+        const test = setup(surface, false, '/NO_DBUSMENU', true);
+        test.click(1);
+        expect(test.call).toHaveBeenLastCalledWith('ContextMenu', 12, 34);
     });
 
     it('routes middle click only to secondary activation', () => {

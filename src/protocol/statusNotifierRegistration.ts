@@ -11,7 +11,7 @@ export type UniqueNameResolver = (busName: string) => Promise<string>;
 export class StatusNotifierRegistrationIndex {
     #registrations: Map<string, Registration> | null = new Map();
 
-    async add(service: string, sender: string, resolveUniqueName: UniqueNameResolver): Promise<Registration | null> {
+    async add(service: string, sender: string, resolveUniqueName: UniqueNameResolver, repeat?: (registration: Registration) => void): Promise<Registration | null> {
         const isPath = service.startsWith('/');
         const requestedName = isPath ? sender : service;
         const busName = requestedName.startsWith(':')
@@ -20,8 +20,13 @@ export class StatusNotifierRegistrationIndex {
         const objectPath = isPath ? service : DEFAULT_ITEM_PATH;
         const key = `${busName}${objectPath}`;
 
-        if (!this.#registrations || this.#registrations.has(key))
+        if (!this.#registrations)
             return null;
+        const existing = this.#registrations.get(key);
+        if (existing) {
+            repeat?.(existing);
+            return null;
+        }
 
         const registration = {key, busName, objectPath};
         this.#registrations.set(key, registration);
